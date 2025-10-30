@@ -1,0 +1,98 @@
+# This workflow will run terraform plan and apply
+
+name: Apply AWS core config
+on:
+  push: {}
+  workflow_call:
+    secrets:
+      ACCOUNT_ID:
+        required: true
+  workflow_dispatch: {}
+env:
+  AWS_REGION : "eu-central-2"
+# permission can be added at job level or workflow level
+permissions:
+  id-token: write   # This is required for requesting the JWT
+  contents: read    # This is required for actions/checkout
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    environment: plan
+    outputs:
+      returncode: ${{ steps.plan-step.outputs.exitcode }}
+    defaults:
+      run:
+        working-directory: ./terraform
+    steps:
+      - name: Git clone the repository
+        uses: actions/checkout@v4
+
+      # TODO: Change to a read-only role
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.ACCOUNT_ID }}:role/${{ vars.ROLE_NAME }}
+          role-session-name: github-session-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform fmt
+        id: fmt
+        run: terraform fmt -check
+
+      - name: Terraform Init
+        id: init
+        run: terraform init -lock-timeout=300s
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan-step
+        run: terraform plan -no-color -detailed-exitcode -lock-timeout=300s
+        continue-on-error: true
+
+      - name: Fail if terraform plan failed
+        id: check-plan
+        if: steps.plan-step.outputs.exitcode == 1
+        run: exit 1
+
+  apply:
+    runs-on: ubuntu-latest
+    environment: apply
+    needs: plan
+    if: |
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'fe-ax/tf-aws' && 
+      needs.plan.outputs.returncode == 2
+    defaults:
+      run:
+        working-directory: ./terraform
+    steps:
+      - name: Git clone the repository
+        uses: actions/checkout@v4
+
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.ACCOUNT_ID }}:role/${{ vars.ROLE_NAME }}
+          role-session-name: github-session-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform fmt
+        id: fmt
+        run: terraform fmt -check
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Apply
+        id: apply
+        run: terraform apply -auto-approve -lock-timeout=300s
+        continue-on-error: true
